@@ -1,0 +1,118 @@
+#!/usr/bin/env python
+# -*- encoding: utf-8 -*-
+# Created on 2016-11-14 11:39:55
+# Project: zj_dp_food
+
+
+import urllib
+import urllib2
+import re
+from urllib import quote
+from pyspider.libs.base_handler import *
+user_agent = 'Mozilla/4.0 (compatible; MSIE 5.5; Windows NT)'
+headers = { 'User-Agent' : user_agent }
+
+
+class Handler(BaseHandler):
+    crawl_config = {
+    }
+
+    @every(minutes=7 * 24 * 60)
+    def on_start(self):
+        self.crawl('http://www.dianping.com/citylist/citylist?citypage=1', callback=self.city_select_page)
+
+    @config(age=0)
+    def city_select_page(self, response):
+        for each in response.doc('.root:nth-child(4)>dl:nth-child(4)>dd>a').items():
+            self.crawl(each.attr.href, callback=self.type_select_page)
+
+    @config(age=0)
+    def type_select_page(self, response):
+        for each in response.doc('#index-nav>li:first-child>a:first-child').items():
+            self.crawl(each.attr.href, callback=self.type_idx_page)
+
+    @config(age=0)
+    def type_idx_page(self, response):
+        for each in response.doc(
+                '#top > div.main.page-sa.page-channel.Fix > div.section > div > div.block.popular-nav > ul > li:nth-child(3) > ul > li > a').items():
+            self.crawl(each.attr.href, callback=self.food_type_dtl_page)
+
+    @config(age=0)
+    def food_type_dtl_page(self, response):
+        num_str = response.doc('#top > div.section.Fix > div.bread.J_bread > span.num').text()
+        num = re.findall('\((.*?)\)', num_str)[0]
+        if int(num) > 750:  # 大于50页，拆分成地区后再翻页
+            print num, '> 750'
+            for each in response.doc('#region-nav > a').items():
+                self.crawl(each.attr.href, callback=self.food_type_reg_dtl_page)
+        else:  # 小于50页，直接翻页
+            print num, '<= 750'
+            for each in response.doc('#shop-all-list > ul > li > div.pic > a').items():
+                self.crawl(each.attr.href, callback=self.shop_dtl_page)
+                # 翻页
+                for each in response.doc(
+                        '#top > div.section.Fix > div.content-wrap > div.shop-wrap > div.page > a.next').items():
+                    self.crawl(each.attr.href, callback=self.food_type_dtl_page)
+
+    @config(age=0)
+    def food_type_reg_dtl_page(self, response):
+        num_str = response.doc('#top > div.section.Fix > div.bread.J_bread > span.num').text()
+        num = re.findall('\((.*?)\)', num_str)[0]
+        if int(num) > 750:
+            print num, '> 750, Need New Method!!!'
+        else:  # 小于50页，直接翻页
+            print num, '<= 750'
+            for each in response.doc('#shop-all-list > ul > li > div.pic > a').items():
+                self.crawl(each.attr.href, callback=self.shop_dtl_page)
+                # 翻页
+                for each in response.doc(
+                        '#top > div.section.Fix > div.content-wrap > div.shop-wrap > div.page > a.next').items():
+                    self.crawl(each.attr.href, callback=self.food_type_dtl_page)
+
+    @config(priority=100)
+    def shop_dtl_page(self, response):
+        cut1='http://api.map.baidu.com/place/v2/search?q='
+        name=response.doc('#body > div.body-content.clearfix > div.breadcrumb > span').text()
+        addr= response.doc('#basic-info > div.expand-info.address > span.item').text()
+
+        cut2=name.encode('gbk')
+        cut2=quote(cut2)
+        cut3='&region=%E6%A1%90%E4%B9%A1&output=json&ak=sGZOkeDdDDh55kIiuYC2qUg1'
+        baidu_api_url=cut1+cut2+cut3
+        request = urllib2.Request(baidu_api_url, headers=headers)
+        res = urllib2.urlopen(request)
+        content = res.read().decode('utf-8')
+        pattern = re.compile('lat":(.*?),.*?lng":(.*?)\n', re.S)
+        items = re.search(pattern, content)
+        if items:
+            print items.group(1)
+            print items.group(2)
+        else:
+            cut2 = addr.encode('gbk')
+            cut2 = quote(cut2)
+            baidu_api_url = cut1 + cut2 + cut3
+            request = urllib2.Request(baidu_api_url, headers=headers)
+            res = urllib2.urlopen(request)
+            content = res.read().decode('utf-8')
+            pattern = re.compile('lat":(.*?),.*?lng":(.*?)\n', re.S)
+            items = re.search(pattern, content)
+
+        r = re.search('\{lng:(.*?),lat:(.*?)\}', response.content)
+        return {
+            "POI_ID": response.url.split('/')[-1],
+            "POI_CLS1":response.doc('.J-current-category').text(),
+            "POI_CLS2": response.doc('#body > div.body-content.clearfix > div.breadcrumb > a:nth-child(3)').text(),
+            #"region": response.doc('#body > div.body-content.clearfix > div.breadcrumb > a:nth-child(2)').text(),
+            "POI_NAME": response.doc('#body > div.body-content.clearfix > div.breadcrumb > span').text(),
+            "POI_ADDR": response.doc('#basic-info > div.expand-info.address > span.item').text(),
+            "PHONE": response.doc('#basic-info > p > span.item').text(),
+            "PRICE": response.doc('#basic-info > div.brief-info > span.item:nth-child(4)').text(),
+            "LONGITUDE": r.group(1),
+            "LATITUDE": r.group(2),
+            "PROV_NAME":'浙江',
+            "CITY_NAME":'NULL',
+            'COUNTY_NAME':response.doc('.J-city').text(),
+            "BD_LATITUDE":items.group(1),
+            'BD_LONGITUDE':items.group(2)
+
+        }
